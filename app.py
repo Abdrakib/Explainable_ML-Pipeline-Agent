@@ -1,3 +1,15 @@
+# Fix pydub audioop issue on Python 3.13
+import sys
+import types
+
+audioop_mock = types.ModuleType("audioop")
+sys.modules["audioop"] = audioop_mock
+
+try:
+    import spaces
+except ImportError:
+    spaces = type("spaces", (), {"GPU": lambda f: f})()
+
 """
 Explainable ML Pipeline Agent — Gradio UI with native tabs and file uploads.
 Pipeline step cards are rendered as HTML inside dedicated output panels.
@@ -6,9 +18,7 @@ Pipeline step cards are rendered as HTML inside dedicated output panels.
 import gradio as gr
 import pandas as pd
 import numpy as np
-import os
 import json
-import inspect
 import tempfile
 import traceback
 import datetime
@@ -20,8 +30,10 @@ try:
     from agent.report import _build_html, _build_markdown
     from predict import save_model, load_model, predict as run_predict
     AGENT_AVAILABLE = True
-except ImportError:
+    print(f"✅ AGENT IMPORT OK")
+except ImportError as e:
     AGENT_AVAILABLE = False
+    print(f"❌ AGENT IMPORT FAILED: {e}")
 
 APP_ROOT = Path(__file__).resolve().parent
 DATASETS_DIR = APP_ROOT / "datasets"
@@ -146,14 +158,21 @@ def _comp_table(comp_df):
             f'<thead><tr>{heads}</tr></thead><tbody>{rows}</tbody></table></div>')
 
 def _log_html(lines):
+    if lines is None or isinstance(lines, bool):
+        lines = []
+    elif isinstance(lines, (list, tuple)):
+        lines = list(lines)
+    else:
+        lines = [lines]
     items = ""
     for line in lines[-80:]:
-        l = line.lower()
+        line_s = str(line) if not isinstance(line, str) else line
+        l = line_s.lower()
         if any(x in l for x in ["done","saved","complete","✓"]): cls = "ll-ok"
         elif any(x in l for x in ["warning","overfit","⚠"]):     cls = "ll-warn"
         elif any(x in l for x in ["error","failed","✗"]):        cls = "ll-err"
         else:                                                      cls = "ll-info"
-        items += f'<div class="{cls}">{line}</div>'
+        items += f'<div class="{cls}">{line_s}</div>'
     return f'<div class="log-box">{items or "<span class=ll-info>No log lines yet</span>"}</div>'
 
 def _ds_info(df):
@@ -306,32 +325,62 @@ def render_final(r,e):
             f'<div class="final-explain">{e or ""}</div></div>')
 
 def build_pipeline_html(events):
-    html = ""
-    fin  = ""
+    steps = {}
+    fin = ""
     for ev in events:
         t = ev.get("type")
-        r = ev.get("result",{}) or {}
-        e = r.get("explanation","") if r else ""
-        if t=="step_start":
-            nm = ev.get("name","Step")
-            st = ev.get("step","")
-            html += (_card(st,nm,"running") +
-                     '<div class="running-msg">Processing…</div>'
-                     '<div class="progress-bar"><div class="progress-fill"></div></div></div>')
-        elif t=="step_done":
-            nm = ev.get("name","")
-            st = str(ev.get("step",""))
-            if   st=="1"  or "eda"    in nm.lower() or "data an" in nm.lower(): html += render_eda(r,e)
-            elif st=="2"  or "task"   in nm.lower():                             html += render_task(r,e)
-            elif st=="2b" or "domain" in nm.lower():                             html += render_domain(r,e)
-            elif st=="3"  or "prep"   in nm.lower():                             html += render_prep(r,e)
-            elif st=="4"  and "plan"  in nm.lower():                             html += render_plan(r,e)
-            elif st=="5"  or ("train" in nm.lower() and "plan" not in nm.lower()):html += render_train(r,e)
-            elif st=="6"  or "tun"    in nm.lower():                             html += render_tune(r,e)
-            elif st=="7"  or "eval"   in nm.lower():                             html += render_eval(r,e)
-            elif st=="8"  or "final"  in nm.lower() or "recommend" in nm.lower():fin   = render_final(r,e)
-            else:                                                                 html += render_eda(r,e)
-    return html + fin
+        if not isinstance(t, str):
+            t = str(t) if t is not None else ""
+        r = ev.get("result", {}) or {}
+        e = r.get("explanation", "") if r else ""
+        if not isinstance(e, str):
+            e = str(e) if e is not None else ""
+
+        if t == "step_start":
+            nm = ev.get("name", "Step")
+            if not isinstance(nm, str):
+                nm = str(nm) if nm is not None else "Step"
+            st = ev.get("step", "")
+            st_key = str(st)
+            steps[st_key] = (
+                _card(st, nm, "running")
+                + '<div class="running-msg">Processing…</div>'
+                + '<div class="progress-bar"><div class="progress-fill"></div></div></div>'
+            )
+        elif t == "step_done":
+            nm = ev.get("name", "")
+            if not isinstance(nm, str):
+                nm = str(nm) if nm is not None else ""
+            st = str(ev.get("step", ""))
+            if st == "8" or "final" in nm.lower() or "recommend" in nm.lower():
+                steps.pop(st, None)
+                fin = render_final(r, e)
+            elif st == "1" or "eda" in nm.lower() or "data an" in nm.lower():
+                steps[st] = render_eda(r, e)
+            elif st == "2" or "task" in nm.lower():
+                steps[st] = render_task(r, e)
+            elif st == "2b" or "domain" in nm.lower():
+                steps[st] = render_domain(r, e)
+            elif st == "3" or "prep" in nm.lower():
+                steps[st] = render_prep(r, e)
+            elif st == "4" and "plan" in nm.lower():
+                steps[st] = render_plan(r, e)
+            elif st == "5" or ("train" in nm.lower() and "plan" not in nm.lower()):
+                steps[st] = render_train(r, e)
+            elif st == "6" or "tun" in nm.lower():
+                steps[st] = render_tune(r, e)
+            elif st == "7" or "eval" in nm.lower():
+                steps[st] = render_eval(r, e)
+            else:
+                steps[st] = render_eda(r, e)
+        elif t == "done":
+            r2 = ev.get("result", {}) or {}
+            e2 = r2.get("final_summary", "")
+            if not isinstance(e2, str):
+                e2 = str(e2) if e2 is not None else ""
+            fin = render_final(r2, e2)
+
+    return "".join(steps.values()) + fin
 
 # ════════════════════════════════════════════════════════════════
 # UI CSS + empty state (pipeline HTML uses #pipeline-output wrapper in DOM)
@@ -358,8 +407,11 @@ def _export_html(show: bool, html_p, md_p, pkl_p) -> str:
     )
 
 
-def _fmt_pipeline_html(ph: str) -> str:
-    body = (ph or "").strip()
+def _fmt_pipeline_html(ph) -> str:
+    if ph is None or ph is False:
+        body = ""
+    else:
+        body = str(ph).strip()
     if not body:
         body = EMPTY_PIPE_HTML.strip()
     return body
@@ -737,21 +789,6 @@ setTimeout(() => {
 """
 
 
-def _no_public_api() -> dict:
-    """
-    Keep handlers off the public REST/OpenAPI schema.
-
-    Gradio 6.x on ZeroGPU can emit invalid JSON Schema for some components
-    (e.g. DownloadButton), which crashes /info (TypeError: 'bool' is not iterable
-    in gradio_client). Gradio 4.x skips schema when api_name=False; 5+ uses
-    api_visibility='private'.
-    """
-    sig = inspect.signature(gr.Button.click)
-    if "api_visibility" in sig.parameters:
-        return {"api_visibility": "private"}
-    return {"api_name": False}
-
-
 # ════════════════════════════════════════════════════════════════
 # GRADIO BLOCKS
 # ════════════════════════════════════════════════════════════════
@@ -762,7 +799,6 @@ with gr.Blocks(
     css=APP_CSS,
     js=js,
 ) as demo:
-
     df_state = gr.State(None)
     events_st = gr.State([])
     logs_st = gr.State([])
@@ -783,13 +819,16 @@ with gr.Blocks(
                 elem_id="theme-toggle-btn",
             )
 
-    theme_btn.click(None, js="toggleTheme")
+    theme_btn.click(
+        None,
+        js="toggleTheme",
+    )
 
     with gr.Tabs():
         with gr.Tab("⚡ Pipeline"):
             with gr.Row(equal_height=False):
                 with gr.Column(scale=0, min_width=276):
-                    gr_csv = gr.File(
+                    csv_file = gr.File(
                         label="Upload CSV dataset",
                         file_types=[".csv"],
                         type="filepath",
@@ -802,12 +841,15 @@ with gr.Blocks(
                         btn_housing = gr.Button("Housing", size="sm")
                         btn_diabetes = gr.Button("Diabetes", size="sm")
                     preview_out = gr.HTML(value="<div class='ds-info' style='color:#94a3b8'>No dataset loaded</div>")
-                    goal_input = gr.Textbox(
+                    target_text = gr.Textbox(
                         label="What do you want to predict?",
                         placeholder='e.g. "predict whether a patient will be readmitted"',
                         lines=3,
                     )
-                    run_btn = gr.Button("▶ Run pipeline", variant="primary")
+                    run_btn = gr.Button(
+                        "▶ Run pipeline",
+                        variant="primary",
+                    )
 
                 with gr.Column(scale=1):
                     pipeline_out = gr.HTML(value=EMPTY_PIPE_HTML, elem_id="pipeline-output")
@@ -830,12 +872,15 @@ with gr.Blocks(
             predict_btn = gr.Button("🔮 Predict", variant="primary")
             with gr.Column(elem_id="infer-pred-wrap"):
                 pred_out = gr.HTML()
-            pred_dl = gr.DownloadButton("⬇ Download predictions CSV", visible=False)
+            pred_dl = gr.File(
+                label="⬇ Download predictions CSV",
+                visible=False,
+            )
 
     def _views_from_data(df, info_html, ev, lg, res, hp, mp, pp):
         pipe = _fmt_pipeline_html(build_pipeline_html(ev))
         log_v = _log_html(lg) if lg else ""
-        exp_v = _export_html(res is not None, hp, mp, pp)
+        exp_v = str(_export_html(bool(res is not None), hp, mp, pp))
         return (
             gr.update(value=info_html),
             gr.update(value=pipe),
@@ -849,7 +894,7 @@ with gr.Blocks(
                 gr.update(value="<div class='ds-info' style='color:#94a3b8'>No dataset loaded</div>"),
                 gr.update(value=_fmt_pipeline_html(build_pipeline_html(ev))),
                 gr.update(value=_log_html(lg) if lg else ""),
-                gr.update(value=_export_html(res is not None, hp, mp, pp)),
+                gr.update(value=str(_export_html(bool(res is not None), hp, mp, pp))),
                 None,
             )
         try:
@@ -865,11 +910,10 @@ with gr.Blocks(
                 None,
             )
 
-    gr_csv.change(
+    csv_file.change(
         on_csv,
-        inputs=[gr_csv, events_st, logs_st, result_st, html_p_st, md_p_st, pkl_p_st],
+        inputs=[csv_file, events_st, logs_st, result_st, html_p_st, md_p_st, pkl_p_st],
         outputs=[preview_out, pipeline_out, log_out, export_out, df_state],
-        **_no_public_api(),
     )
 
     def on_sample(name, ev, lg, res, hp, mp, pp):
@@ -899,51 +943,87 @@ with gr.Blocks(
         lambda e, l, r, h, m, p: on_sample("titanic", e, l, r, h, m, p),
         inputs=[events_st, logs_st, result_st, html_p_st, md_p_st, pkl_p_st],
         outputs=[preview_out, pipeline_out, log_out, export_out, df_state],
-        **_no_public_api(),
     )
     btn_healthcare.click(
         lambda e, l, r, h, m, p: on_sample("healthcare", e, l, r, h, m, p),
         inputs=[events_st, logs_st, result_st, html_p_st, md_p_st, pkl_p_st],
         outputs=[preview_out, pipeline_out, log_out, export_out, df_state],
-        **_no_public_api(),
     )
     btn_housing.click(
         lambda e, l, r, h, m, p: on_sample("housing", e, l, r, h, m, p),
         inputs=[events_st, logs_st, result_st, html_p_st, md_p_st, pkl_p_st],
         outputs=[preview_out, pipeline_out, log_out, export_out, df_state],
-        **_no_public_api(),
     )
     btn_diabetes.click(
         lambda e, l, r, h, m, p: on_sample("diabetes", e, l, r, h, m, p),
         inputs=[events_st, logs_st, result_st, html_p_st, md_p_st, pkl_p_st],
         outputs=[preview_out, pipeline_out, log_out, export_out, df_state],
-        **_no_public_api(),
     )
 
-    def run_pipe(df, goal, _ev, _lg):
+    def _load_pipeline_gpu():
+        return load_llm_pipeline()
+
+    @spaces.GPU
+    def _gpu_warmup():
+        """Dummy function to satisfy ZeroGPU's @spaces.GPU requirement."""
+        pass
+
+    def run_pipeline(file, target, df, _ev, _lg):
+        print("RUN PIPELINE TRIGGERED")
+        print(f"file={file}")
+        print(f"target={target}")
+        print(f"df_is_none={df is None}")
         events = []
         logs = []
+        target_value = (target or "").strip()
 
-        def _out(ph, lg, exp=False, hp=None, mp=None, pp=None, res=None, bundle=None, pc=None):
+        def _path_str(p):
+            if p is None:
+                return None
+            return str(p)
+
+        def _out(
+            ph,
+            lg,
+            exp=False,
+            hp=None,
+            mp=None,
+            pp=None,
+        ):
             return (
                 gr.update(value=_fmt_pipeline_html(ph)),
                 gr.update(value=_log_html(lg) if lg else ""),
-                gr.update(value=_export_html(exp, hp, mp, pp)),
+                gr.update(value=str(_export_html(bool(exp), hp, mp, pp))),
                 list(events),
                 list(logs),
-                res,
-                bundle,
-                hp,
-                mp,
-                pp,
-                pc,
+                None,
+                None,
+                _path_str(hp),
+                _path_str(mp),
+                _path_str(pp),
+                None,
             )
 
-        if df is None:
-            yield _out(_alert("err", "Please upload a dataset or pick a sample first."), logs)
+        work_df = df
+        if work_df is None and file is not None:
+            try:
+                work_df = pd.read_csv(file)
+            except Exception as e:
+                msg = f"Could not read CSV: {e}"
+                yield _out(_alert("err", msg), logs)
+                return
+
+        if work_df is None:
+            yield _out(
+                _alert("err", "Please upload a dataset or pick a sample first."),
+                logs,
+            )
             return
-        if not goal or not goal.strip():
-            yield _out(_alert("err", "Please describe what you want to predict."), logs)
+        if not target_value:
+            yield _out(
+                _alert("err", "Please describe what you want to predict."),
+                logs,
+            )
             return
         if not AGENT_AVAILABLE:
             yield _out(_alert("err", "Agent modules not found."), logs)
@@ -957,12 +1037,14 @@ with gr.Blocks(
         yield _out(load_html, logs)
 
         try:
-            pipe = load_llm_pipeline()
-            agent = OssAutoMLAgent(df, goal.strip(), pipe)
+            pipe = _load_pipeline_gpu()
+            agent = OssAutoMLAgent(work_df, target_value, pipe)
             final = None
 
             for ev in agent.run():
                 t = ev.get("type")
+                if not isinstance(t, str):
+                    t = str(t) if t is not None else ""
                 if t == "log":
                     logs.append(ev.get("content", ""))
                     yield _out(build_pipeline_html(events), logs)
@@ -997,27 +1079,31 @@ with gr.Blocks(
                         )
                     except Exception:
                         pkl_p = None
+                    print("Function executed successfully")
                     yield (
                         gr.update(value=_fmt_pipeline_html(build_pipeline_html(events))),
-                        gr.update(value=_log_html(logs)),
-                        gr.update(value=_export_html(True, html_p, md_p, pkl_p)),
+                        gr.update(value=_log_html(logs) if logs else ""),
+                        gr.update(value=str(_export_html(True, html_p, md_p, pkl_p))),
                         list(events),
                         list(logs),
-                        final,
                         None,
-                        html_p,
-                        md_p,
-                        pkl_p,
+                        None,
+                        _path_str(html_p),
+                        _path_str(md_p),
+                        _path_str(pkl_p),
                         None,
                     )
                     return
         except Exception as ex:
             logs.append(f"✗ {ex}")
-            yield _out(build_pipeline_html(events) + _alert("err", str(ex)), logs)
+            yield _out(
+                build_pipeline_html(events) + _alert("err", str(ex)),
+                logs,
+            )
 
     run_btn.click(
-        run_pipe,
-        inputs=[df_state, goal_input, events_st, logs_st],
+        fn=run_pipeline,
+        inputs=[csv_file, target_text, df_state, events_st, logs_st],
         outputs=[
             pipeline_out,
             log_out,
@@ -1031,7 +1117,6 @@ with gr.Blocks(
             pkl_p_st,
             pred_csv_st,
         ],
-        **_no_public_api(),
     )
 
     def on_model(path):
@@ -1056,7 +1141,6 @@ with gr.Blocks(
         on_model,
         inputs=[model_upload],
         outputs=[model_info_out, bundle_st],
-        **_no_public_api(),
     )
 
     def on_predict(bundle, csv_path):
@@ -1096,7 +1180,11 @@ with gr.Blocks(
                 )
             pc = str(OUTPUT_DIR / "predictions.csv")
             rdf.to_csv(pc, index=False)
-            return gr.update(value=ph), gr.update(visible=True, value=pc), pc
+            return (
+                gr.update(value=ph),
+                gr.update(visible=True, value=str(pc)),
+                str(pc),
+            )
         except Exception as e:
             return (
                 gr.update(value=_alert("err", f"Prediction error: {e}")),
@@ -1108,40 +1196,11 @@ with gr.Blocks(
         on_predict,
         inputs=[bundle_st, infer_csv],
         outputs=[pred_out, pred_dl, pred_csv_st],
-        **_no_public_api(),
     )
 
 
+demo.queue(max_size=5)
+
+
 if __name__ == "__main__":
-    # Hugging Face Spaces / ZeroGPU sets SPACE_ID. Gradio verifies local_url with httpx;
-    # HTTP(S)_PROXY without a proper bypass often makes that probe fail on the Space image.
-    _hf_space = bool(os.environ.get("SPACE_ID"))
-    if _hf_space:
-        _loop = "localhost,127.0.0.1,127.0.0.1/8,::1"
-        for _key in ("NO_PROXY", "no_proxy"):
-            _cur = os.environ.get(_key, "").strip()
-            if _cur and _loop.split(",")[0] not in _cur:
-                os.environ[_key] = f"{_loop},{_cur}"
-            elif not _cur:
-                os.environ[_key] = _loop
-        for _pk in (
-            "HTTP_PROXY",
-            "http_proxy",
-            "HTTPS_PROXY",
-            "https_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-        ):
-            os.environ.pop(_pk, None)
-
-    demo.queue()
-
-    _launch_kw: dict = {"show_error": True}
-    if _hf_space:
-        if "_frontend" in inspect.signature(demo.launch).parameters:
-            _launch_kw["_frontend"] = False
-    else:
-        _launch_kw["server_name"] = "0.0.0.0"
-        _launch_kw["server_port"] = int(os.environ.get("PORT", "7860"))
-
-    demo.launch(**_launch_kw)
+    demo.launch(ssr_mode=False)

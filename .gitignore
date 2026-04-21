@@ -12,3 +12,7 @@ outputs/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local monorepo checkouts only (this repo is the flat OSS layout)
+automl-engineer-agent/
+automl-engineer-agent-oss/

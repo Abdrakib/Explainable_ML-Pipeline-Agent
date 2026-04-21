@@ -1,0 +1,27 @@
+# Push main → https://huggingface.co/spaces/Abdourakib/explainable-ml-pipeline-agent
+# Requires GitHub repo secret: HF_TOKEN (Hugging Face token with write access)
+
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to Hugging Face Hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git remote add space "https://Abdrakib:${HF_TOKEN}@huggingface.co/spaces/Abdourakib/explainable-ml-pipeline-agent"
+          git push --force space main:main
